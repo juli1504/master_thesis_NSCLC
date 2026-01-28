@@ -1,0 +1,12 @@
+```text
+# Ignore Data
+data/
+*.dcm
+*.xml
+*.csv
+
+# Ignore System Files
+.DS_Store
+__pycache__/
+*.ipynb_checkpoints/
+.env
