@@ -28,30 +28,42 @@ def main():
     df_xml = pd.DataFrame({'Subject ID': xml_ids, 'Has_XML': True})
     print(f"-> {len(df_xml)} XML-Dateien gefunden.")
 
-    # 3. DICOM DATEN (Verbesserte Logik)
+    # 3. DICOM DATEN (Fix für verrutschte Subject ID)
     df_meta = pd.read_csv(PATH_METADATA)
     df_meta.columns = df_meta.columns.str.strip()
     
-    # Filter für CT (Sucht nach 'CT' im Text, egal ob 'CT' oder 'CT Image Storage')
+    # TCIA Metadata Fix: Manchmal ist 'Subject ID' nicht die Spalte mit 'AMC-001'
+    id_col = 'Subject ID'
+    if df_meta[id_col].iloc[0].startswith('1.3.6.'):
+        print("DEBUG: Subject ID Spalte enthält UIDs, versuche Fix...")
+        df_meta['Real_ID'] = df_meta['Subject ID'] 
+    else:
+        df_meta['Real_ID'] = df_meta['Subject ID']
+
+    # Filter für CT
     df_ct = df_meta[df_meta['Modality'].str.contains('CT', na=False)].copy()
     
     def check_path_exists(path_str):
         if pd.isna(path_str): return False
-        # Bereinige den Pfad aus der CSV
         clean_path_str = path_str.lstrip('./').lstrip('.\\').replace('\\', os.sep).replace('/', os.sep)
         full_path = DIR_DICOM_ROOT / clean_path_str
         return full_path.exists()
 
-    # Kleiner Debug-Print für den ersten Patienten
-    sample_row = df_ct.iloc[0]
-    sample_path_csv = sample_row['File Location']
-    clean_sample = sample_path_csv.lstrip('./').lstrip('.\\').replace('\\', os.sep)
-    print(f"\nDEBUG: Prüfe Pfad für {sample_row['Subject ID']}:")
-    print(f"  Erwartet: {DIR_DICOM_ROOT / clean_sample}")
-    print(f"  Existiert dieser Ordner? {'JA' if (DIR_DICOM_ROOT / clean_sample).exists() else 'NEIN'}\n")
-
     df_ct['Path_Exists'] = df_ct['File Location'].apply(check_path_exists)
+    
     available_ct_ids = df_ct[df_ct['Path_Exists'] == True]['Subject ID'].unique()
+    
+    # Fix: Falls die IDs in der Metadata UIDs sind, extrahieren wir die ID aus dem Pfad
+    if len(available_ct_ids) > 0 and str(available_ct_ids[0]).startswith('1.3.6.'):
+        print("Extrahiere Patienten-IDs aus den Ordnerpfaden...")
+        def extract_id(path_str):
+            parts = path_str.replace('\\', '/').split('/')
+            for p in parts:
+                if p.startswith('AMC-') or p.startswith('R01-'):
+                    return p
+            return path_str
+        available_ct_ids = df_ct[df_ct['Path_Exists'] == True]['File Location'].apply(extract_id).unique()
+
     df_dicom = pd.DataFrame({'Subject ID': available_ct_ids, 'Has_DICOM': True})
     print(f"-> {len(df_dicom)} Patienten mit validen CT-Pfaden gefunden.")
 
