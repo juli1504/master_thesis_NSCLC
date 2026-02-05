@@ -27,12 +27,7 @@ def extract_series_uid_robust(xml_path):
 def main():
     print("Starte robusten XML-Deep-Scan (AIM v4)...")
     
-    if not DIR_XML.exists():
-        print(f"FEHLER: XML Ordner nicht gefunden: {DIR_XML}")
-        return
-
     xml_files = list(DIR_XML.glob("*.xml"))
-    
     results = []
     for xml_file in xml_files:
         patient_id = xml_file.stem 
@@ -44,8 +39,6 @@ def main():
         })
     
     df_xml_mapping = pd.DataFrame(results)
-    
-    # --- WICHTIG: Cleaning ---
     df_xml_mapping['Linked_Series_UID'] = df_xml_mapping['Linked_Series_UID'].astype(str).str.strip()
     
     print(f"XML-Scan fertig. UIDs gefunden: {df_xml_mapping['Linked_Series_UID'].nunique()}")
@@ -55,16 +48,22 @@ def main():
         print("FEHLER: Metadata CSV nicht gefunden.")
         return
 
+    # --- DER FIX ---
+    # Wir lesen die CSV normal ein (Pandas macht die UID fälschlicherweise zum Index)
     df_meta = pd.read_csv(PATH_METADATA)
-    df_meta.columns = df_meta.columns.str.strip()
     
-    # --- WICHTIG: Cleaning auch hier ---
-    df_meta['Series UID'] = df_meta['Series UID'].astype(str).str.strip()
+    # Wir holen uns die UID aus dem Index zurück in eine echte Spalte!
+    df_meta['Series UID Fix'] = df_meta.index.astype(str).str.strip()
+    
+    df_meta['File Location'] = df_meta['File Location'].astype(str).str.strip()
 
+    print(f"Metadata geladen. Erste UID (Fix): {df_meta['Series UID Fix'].iloc[0]}")
+
+    # Merge auf der neuen, gefixten Spalte
     df_final_mapping = df_xml_mapping.merge(
-        df_meta[['Series UID', 'File Location', 'Series Description']], 
+        df_meta[['Series UID Fix', 'File Location']], 
         left_on='Linked_Series_UID', 
-        right_on='Series UID', 
+        right_on='Series UID Fix', 
         how='left'
     )
     
@@ -74,19 +73,15 @@ def main():
     print(f"MATCHING ERGEBNIS:")
     print(f"XMLs gesamt: {len(df_xml_mapping)}")
     print(f"Davon erfolgreich mit DICOM verknüpft: {matched}")
-    
-    if matched == 0:
-        print("\nDEBUG: Vergleich der IDs (Erste 3 Zeilen):")
-        print("XML ID:", df_xml_mapping['Linked_Series_UID'].iloc[0])
-        print("Meta ID:", df_meta['Series UID'].iloc[0])
-        print("(Prüfe ob sie gleich aussehen!)")
-    
     print("-" * 30)
     
-    out_path = PROJECT_ROOT / "data" / "processed" / "exact_image_mapping.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df_final_mapping.to_csv(out_path, index=False)
-    print(f"Gespeichert: {out_path}")
+    if matched > 0:
+        out_path = PROJECT_ROOT / "data" / "processed" / "exact_image_mapping.csv"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final_mapping.to_csv(out_path, index=False)
+        print(f"SUCCESS! Mapping gespeichert: {out_path}")
+    else:
+        print("Immer noch 0 Matches. Prüfe die UIDs im Debug-Print oben.")
 
 if __name__ == "__main__":
     main()
