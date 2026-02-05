@@ -72,108 +72,101 @@ def parse_aim_xml(xml_path):
         return []
 
 def main():
-    print("--- Starte Tumor-Visualisierung ---")
+    print("--- Starte Tumor-Visualisierung (Scanner Mode) ---")
     
-    # 1. Einen Patienten laden
+    # 1. Liste laden
     df_map = pd.read_csv(PATH_MAPPING)
-    # Wir nehmen einen Patienten, der ein Match hat (File Location ist nicht leer)
     valid_patients = df_map[df_map['File Location'].notna()]
     
-    if len(valid_patients) == 0:
-        print("Keine verknüpften Patienten gefunden! Bitte Mapping prüfen.")
-        return
-
-    # Nimm den ersten Patienten (oder ändere den Index, z.B. .iloc[5] für einen anderen)
-    patient_row = valid_patients.iloc[0]
-    subject_id = patient_row['Subject ID']
-    xml_filename = patient_row['XML_File']
+    print(f"Durchsuche {len(valid_patients)} Patienten nach Zeichnungen...")
     
-    print(f"Patient ausgewählt: {subject_id}")
-    print(f"XML Datei: {xml_filename}")
+    found_any = False
     
-    # 2. ROI aus XML holen
-    xml_path = DIR_XML / xml_filename
-    rois = parse_aim_xml(xml_path)
-    
-    if not rois:
-        print("KEINE Region-of-Interest (Zeichnungen) in dieser XML gefunden.")
-        print("Das ist normal bei manchen XMLs (z.B. nur Text-Befunde). Versuche einen anderen Patienten.")
-        return
+    # Wir iterieren durch die Patienten, bis wir einen mit ROIs finden
+    for idx, row in valid_patients.iterrows():
+        subject_id = row['Subject ID']
+        xml_filename = row['XML_File']
+        xml_path = DIR_XML / xml_filename
         
-    print(f"Gefundene ROIs: {len(rois)}")
-    first_roi = rois[0]
-    target_sop_uid = first_roi['sop_uid']
-    print(f"Zeichnung gehört zu Bild-Slice (SOP UID): {target_sop_uid}")
-    
-    # 3. Den Dateipfad zu dieser SOP UID finden (via Metadata)
-    print("Suche DICOM-Datei in Metadata...")
-    df_meta = pd.read_csv(PATH_METADATA)
-    
-    # ACHTUNG: Hier müssen wir wieder schauen, ob wir den Spalten-Fix brauchen
-    # Wir machen es dynamisch: Suche in ALLEN Spalten nach der UID
-    found_row = None
-    file_path_col = 'File Location' # Standardannahme
-    
-    # Wir scannen die ganze CSV nach der UID (etwas langsam, aber sicher)
-    # Da die Spalten verschoben sein können, suchen wir einfach den Wert.
-    mask = df_meta.apply(lambda row: row.astype(str).str.contains(target_sop_uid).any(), axis=1)
-    
-    if mask.sum() == 0:
-        print(f"FEHLER: Konnte SOP UID {target_sop_uid} nicht in Metadata finden.")
-        return
+        # Testen ob ROIs da sind
+        rois = parse_aim_xml(xml_path)
         
-    meta_row = df_meta[mask].iloc[0]
-    
-    # Jetzt den Pfad extrahieren. Wir wissen, er enthält "NSCLC Radiogenomics"
-    # Wir suchen in der Zeile nach einem String, der wie ein Pfad aussieht
-    found_path = None
-    for val in meta_row.values:
-        if isinstance(val, str) and ("NSCLC Radiogenomics" in val or "dicom" in val):
-            found_path = val
-            break
+        if not rois:
+            # Kleiner Status-Print, damit man sieht, dass was passiert
+            print(f"Skipping {subject_id}: Keine Zeichnungen.")
+            continue
             
-    if not found_path:
-        print("Konnte keinen Dateipfad in der Metadata-Zeile finden.")
-        return
+        # --- TREFFER! ---
+        print("\n" + "="*40)
+        print(f"TREFFER BEI PATIENT: {subject_id}")
+        print("="*40)
+        
+        first_roi = rois[0]
+        target_sop_uid = first_roi['sop_uid']
+        print(f"Zeichnungstyp: {first_roi['type']}")
+        print(f"Gehört zu Bild-UID: {target_sop_uid}")
+        
+        # Metadata Suche (wie vorher)
+        df_meta = pd.read_csv(PATH_METADATA)
+        
+        # Robuste Suche nach der UID in der ganzen Zeile
+        mask = df_meta.apply(lambda r: r.astype(str).str.contains(target_sop_uid).any(), axis=1)
+        
+        if mask.sum() == 0:
+            print(f"Schade: Zeichnung da, aber Bild-UID nicht in Metadata gefunden. Suche weiter...")
+            continue
+            
+        meta_row = df_meta[mask].iloc[0]
+        
+        # Pfad finden
+        found_path = None
+        for val in meta_row.values:
+            if isinstance(val, str) and ("NSCLC Radiogenomics" in val or "dicom" in val):
+                found_path = val
+                break
+        
+        if not found_path:
+            continue
 
-    # Pfad bereinigen
-    clean_path = found_path.lstrip('./').lstrip('.\\').replace('\\', '/')
-    full_dicom_path = PROJECT_ROOT / "data" / "raw" / "dicom" / clean_path
-    
-    print(f"DICOM Pfad gefunden: {full_dicom_path}")
-    
-    if not full_dicom_path.exists():
-        print("DATEI EXISTIERT NICHT AUF FESTPLATTE!")
-        # Fallback: Manchmal ist der Dateiname im Pfad anders kodiert
-        # Wir suchen im Ordner nach der Datei
-        folder = full_dicom_path.parent
-        print(f"Suche im Ordner: {folder}")
-        if folder.exists():
-            files = list(folder.glob("*.dcm"))
-            print(f"Dateien im Ordner: {len(files)}")
-            # Wir laden einfach mal die erste, falls wir die exakte nicht finden (nur zum Test)
-            # Aber besser: Wir versuchen die Datei zu finden
-            # (Dieser Teil ist tricky, da Dateinamen oft UIDs sind)
-    
-    # 4. Plotten
-    try:
-        ds = pydicom.dcmread(full_dicom_path)
-        img_array = ds.pixel_array
+        clean_path = found_path.lstrip('./').lstrip('.\\').replace('\\', '/')
+        full_dicom_path = PROJECT_ROOT / "data" / "raw" / "dicom" / clean_path
         
-        plt.figure(figsize=(10, 10))
-        plt.imshow(img_array, cmap='gray')
-        plt.title(f"Patient: {subject_id} | ROI: {first_roi['type']}")
+        print(f"Lade DICOM: {full_dicom_path}")
         
-        # Polygon zeichnen
-        points = first_roi['points']
-        poly = patches.Polygon(points, linewidth=2, edgecolor='r', facecolor='none')
-        plt.gca().add_patch(poly)
-        
-        plt.show()
-        print("Visualisierung erfolgreich!")
-        
-    except Exception as e:
-        print(f"Konnte Bild nicht laden/anzeigen: {e}")
+        if not full_dicom_path.exists():
+            print("Datei physisch nicht gefunden. Nächster...")
+            continue
+            
+        # Plotten
+        try:
+            ds = pydicom.dcmread(full_dicom_path)
+            img_array = ds.pixel_array
+            
+            plt.figure(figsize=(10, 10))
+            plt.imshow(img_array, cmap='gray')
+            plt.title(f"Patient: {subject_id} | {first_roi['type']}")
+            
+            # Alle ROIs dieses Patienten einzeichnen
+            for roi in rois:
+                points = roi['points']
+                # Polygon schließen (erster Punkt = letzter Punkt)
+                if points:
+                    points.append(points[0])
+                    x_vals, y_vals = zip(*points)
+                    plt.plot(x_vals, y_vals, 'r-', linewidth=2, label='Tumor')
+            
+            plt.legend()
+            plt.show()
+            
+            found_any = True
+            break # Wir haben unser Bild, wir hören auf zu suchen!
+            
+        except Exception as e:
+            print(f"Fehler beim Plotten: {e}")
+            continue
+
+    if not found_any:
+        print("\nFAZIT: Keine anzeigbaren Zeichnungen in den gescannten Patienten gefunden.")
 
 if __name__ == "__main__":
     main()
