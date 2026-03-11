@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import sys
 
-# Pfade
+# Paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DIR_XML = PROJECT_ROOT / "data" / "raw" / "xml"
 PATH_METADATA = PROJECT_ROOT / "data" / "raw" / "metadata.csv"
@@ -20,12 +20,12 @@ def extract_series_uid_robust(xml_path):
                     if child_tag_clean == 'instanceUid':
                         return child.attrib.get('root')
     except Exception as e:
-        print(f"Fehler bei {xml_path.name}: {e}")
+        print(f"Error processing {xml_path.name}: {e}")
         return None
     return None
 
 def main():
-    print("Starte robusten XML-Deep-Scan (AIM v4)...")
+    print("Starting robust XML deep scan (AIM v4)...")
     
     xml_files = list(DIR_XML.glob("*.xml"))
     results = []
@@ -41,25 +41,25 @@ def main():
     df_xml_mapping = pd.DataFrame(results)
     df_xml_mapping['Linked_Series_UID'] = df_xml_mapping['Linked_Series_UID'].astype(str).str.strip()
     
-    print(f"XML-Scan fertig. UIDs gefunden: {df_xml_mapping['Linked_Series_UID'].nunique()}")
+    print(f"XML scan complete. Unique UIDs found: {df_xml_mapping['Linked_Series_UID'].nunique()}")
     
-    print("Gleiche mit metadata.csv ab...")
+    print("Comparing with metadata.csv...")
     if not PATH_METADATA.exists():
-        print("FEHLER: Metadata CSV nicht gefunden.")
+        print("ERROR: Metadata CSV not found.")
         return
 
-    # --- DER FIX ---
-    # Wir lesen die CSV normal ein (Pandas macht die UID fälschlicherweise zum Index)
+    # --- THE FIX ---
+    # Read the CSV normally (Pandas incorrectly sets the UID as the index)
     df_meta = pd.read_csv(PATH_METADATA)
     
-    # Wir holen uns die UID aus dem Index zurück in eine echte Spalte!
+    # Retrieve the UID from the index back into a real column
     df_meta['Series UID Fix'] = df_meta.index.astype(str).str.strip()
     
     df_meta['File Location'] = df_meta['File Location'].astype(str).str.strip()
 
-    print(f"Metadata geladen. Erste UID (Fix): {df_meta['Series UID Fix'].iloc[0]}")
+    print(f"Metadata loaded. First UID (Fix): {df_meta['Series UID Fix'].iloc[0]}")
 
-    # Merge auf der neuen, gefixten Spalte
+    # Merge on the new, fixed column
     df_final_mapping = df_xml_mapping.merge(
         df_meta[['Series UID Fix', 'File Location']], 
         left_on='Linked_Series_UID', 
@@ -70,18 +70,18 @@ def main():
     matched = df_final_mapping['File Location'].notna().sum()
     
     print("-" * 30)
-    print(f"MATCHING ERGEBNIS:")
-    print(f"XMLs gesamt: {len(df_xml_mapping)}")
-    print(f"Davon erfolgreich mit DICOM verknüpft: {matched}")
+    print("MATCHING RESULT:")
+    print(f"Total XMLs: {len(df_xml_mapping)}")
+    print(f"Successfully linked with DICOM: {matched}")
     print("-" * 30)
     
     if matched > 0:
         out_path = PROJECT_ROOT / "data" / "processed" / "exact_image_mapping.csv"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df_final_mapping.to_csv(out_path, index=False)
-        print(f"SUCCESS! Mapping gespeichert: {out_path}")
+        print(f"Mapping saved to: {out_path}.")
     else:
-        print("Immer noch 0 Matches. Prüfe die UIDs im Debug-Print oben.")
+        print("Still 0 matches. Check the UIDs in the debug print above.")
 
 if __name__ == "__main__":
     main()

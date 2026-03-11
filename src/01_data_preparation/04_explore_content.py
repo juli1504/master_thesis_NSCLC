@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import os
 
-# --- KONFIGURATION ---
+# --- CONFIGURATION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 PATH_MAPPING = PROJECT_ROOT / "data" / "processed" / "exact_image_mapping.csv"
 PATH_METADATA = PROJECT_ROOT / "data" / "raw" / "metadata.csv"
@@ -13,17 +13,17 @@ DIR_XML = PROJECT_ROOT / "data" / "raw" / "xml"
 DIR_DICOM = PROJECT_ROOT / "data" / "raw" / "dicom"
 PATH_CLINICAL = PROJECT_ROOT / "data" / "raw" / "clinical" / "NSCLCR01Radiogenomic_DATA_LABELS_2018-05-22_1500-shifted.csv"
 
-# Neuer Ordner für die gespeicherten Bilder
+# New folder for saved images
 DIR_FIGURES = PROJECT_ROOT / "results" / "figures"
 DIR_FIGURES.mkdir(parents=True, exist_ok=True)
 
 def print_xml_features(xml_path):
-    """Liest die semantischen Merkmale aus der XML."""
+    """Reads semantic features from the XML."""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         
-        print("\n--- XML INHALT (Auszug) ---")
+        print("\n--- XML CONTENT (Excerpt) ---")
         features_found = 0
         for elem in root.iter():
             tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
@@ -43,44 +43,44 @@ def print_xml_features(xml_path):
                     features_found += 1
                     
         if features_found == 0:
-            print("  (Keine strukturierten Merkmale gefunden)")
+            print("  (No structured features found)")
             
     except Exception as e:
-        print(f"Fehler beim XML lesen: {e}")
+        print(f"Error reading XML: {e}")
 
 def main():
-    print("### SCHRITT 2: ERSTE DATENEXPLORATION ###\n")
+    print("### STEP 2: INITIAL DATA EXPLORATION ###\n")
     
-    # 1. LABEL VERTEILUNG (CSV)
-    print("(1) LABEL VERTEILUNG (CSV)")
+    # 1. LABEL DISTRIBUTION (CSV)
+    print("(1) LABEL DISTRIBUTION (CSV)")
     df_clinical = pd.read_csv(PATH_CLINICAL)
     df_clinical.columns = df_clinical.columns.str.strip()
     
     counts = df_clinical['Histology'].value_counts()
     print(counts)
     
-    # Plot erstellen
-    plt.figure(figsize=(10, 6)) # Breiteres Bild, damit Text Platz hat
+    # Create plot
+    plt.figure(figsize=(10, 6)) # Wider image to fit text
     counts.plot(kind='bar', color='skyblue', edgecolor='black')
     
     plt.title('Distribution of diagnoses (histology)')
     plt.ylabel('Number of Patients')
     plt.xlabel('Diagnosis')
     
-    # Hier ist der Fix für die horizontale Schrift:
+    # Fix for horizontal text:
     plt.xticks(rotation=0) 
     plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.tight_layout() # Verhindert, dass Text abgeschnitten wird
+    plt.tight_layout() # Prevents text from being cut off
     
-    # Erst speichern, dann anzeigen!
+    # Save first, then display
     save_path_chart = DIR_FIGURES / "distribution_histology.png"
     plt.savefig(save_path_chart, dpi=300)
-    print(f"\n>> Diagramm gespeichert unter: {save_path_chart}")
+    print(f"\n>> Chart saved to: {save_path_chart}")
     
-    plt.show() # Pop-up Fenster
+    plt.show() # Pop-up window
     
-    # 2. BEISPIEL LADEN
-    print("\n(2) BEISPIEL-PATIENT ANALYSIEREN")
+    # 2. ANALYZE EXAMPLE PATIENT
+    print("\n(2) ANALYZE EXAMPLE PATIENT")
     df_map = pd.read_csv(PATH_MAPPING)
     match = df_map[df_map['File Location'].notna()].iloc[0]
     subject_id = match['Subject ID']
@@ -88,8 +88,8 @@ def main():
     print(f"Patient: {subject_id}")
     print_xml_features(DIR_XML / match['XML_File'])
     
-    # 3. DICOM BILD
-    print(f"\n(3) DICOM BILD (CT) FÜR {subject_id}")
+    # 3. DICOM IMAGE
+    print(f"\n(3) DICOM IMAGE (CT) FOR {subject_id}")
     
     raw_path = match['File Location']
     clean_path = raw_path.lstrip('./').lstrip('.\\').replace('\\', '/')
@@ -101,7 +101,7 @@ def main():
         if files:
             mid_slice = len(files) // 2
             target_file = files[mid_slice]
-            print(f"  • Lade Slice {mid_slice+1} von {len(files)}: {target_file.name}")
+            print(f"  • Loading slice {mid_slice+1} of {len(files)}: {target_file.name}")
     elif dicom_path.exists():
         target_file = dicom_path
 
@@ -113,13 +113,13 @@ def main():
         plt.title(f"Patient: {subject_id} | {ds.Modality} | Slice Location: {ds.get('SliceLocation', 'N/A')}")
         plt.axis('off')
         
-        # Speichern & Anzeigen
+        # Save & Display
         save_path_img = DIR_FIGURES / f"example_ct_{subject_id}.png"
         plt.savefig(save_path_img, dpi=300)
-        print(f">> CT-Bild gespeichert unter: {save_path_img}")
+        print(f">> CT image saved to: {save_path_img}")
         
-        plt.show() # Pop-up Fenster
-        print("\nERFOLG! Datenpipeline steht. 🚀")
+        plt.show() # Pop-up window
+        print("\nData pipeline is ready.")
 
 if __name__ == "__main__":
     main()
