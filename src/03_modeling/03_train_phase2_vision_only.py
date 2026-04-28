@@ -2,7 +2,7 @@
 Phase 2: Vision Baselines and Fine-Tuning (2.5D CT Patches)
 Features: 
 - Dynamic 7-channel inputs
-- Data Augmentation for class imbalance
+- Data Augmentation for class imbalance (NO WEIGHT PENALTIES)
 - Progressive architectural unfreezing (Block Dial)
 - Optimal thresholding via Youden's J Statistic
 - Clinical Early Stopping (Sens + Spec)
@@ -22,7 +22,6 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 import torchvision.transforms as T
 from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve
 import warnings
 warnings.filterwarnings('ignore')
@@ -135,7 +134,7 @@ def build_vision_model(model_name, unfreeze_blocks, in_channels, num_classes=2):
 
     return model
 
-# --- 4. EVALUATION FUNCTION (YOUDEN'S J STATISTIC) ---
+# --- 4. EVALUATION FUNCTION (Youden's J STATISTIC) ---
 def evaluate(model, dataloader, device):
     model.eval()
     y_true = []
@@ -153,19 +152,16 @@ def evaluate(model, dataloader, device):
     y_true = np.array(y_true)
     y_probs = np.array(y_probs)
     
-    # Calculate ranking AUC (Threshold independent)
     try:
         auc = roc_auc_score(y_true, y_probs)
     except ValueError:
-        auc = 0.5  # Fallback if only one class is present in a tiny batch
+        auc = 0.5  
     
-    # Calculate Optimal Threshold using Youden's J Statistic
     fpr, tpr, thresholds = roc_curve(y_true, y_probs)
     youden_j = tpr - fpr
     optimal_idx = np.argmax(youden_j)
     best_thresh = thresholds[optimal_idx]
     
-    # Apply the scientifically optimal threshold
     y_pred = (y_probs >= best_thresh).astype(int)
     
     acc = accuracy_score(y_true, y_pred)
@@ -218,15 +214,13 @@ def main():
 
     sample_img, _ = train_dataset[0]
     in_channels = sample_img.shape[0]
-    print(f"Detected 2.5D Patches with {in_channels} channels.")
+    print(f"Detected 2.5D Patches with {in_channels} channels.\n")
 
-    y_train = train_dataset.df['histology'].apply(lambda x: le.transform([x])[0])
-    class_wts = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-    weights_tensor = torch.tensor(class_wts, dtype=torch.float32).to(device)
-    print(f"Calculated Class Weights: {weights_tensor.cpu().numpy()}\n")
-
+    # Removed the complex weights calculating block entirely
     model = build_vision_model(args.model, args.unfreeze_blocks, in_channels).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+    
+    # Let the loss function run neutrally
+    criterion = nn.CrossEntropyLoss()
     
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.lr)
@@ -234,8 +228,8 @@ def main():
     save_name = f"best_{args.model}_unfrozen_{args.unfreeze_blocks}.pth"
 
     # --- TRAINING LOOP ---
-    best_clinical_score = 0.0  # Tracking Sens + Spec now!
-    best_auc_tracker = 0.0     # Just to print alongside the winning model
+    best_clinical_score = 0.0  
+    best_auc_tracker = 0.0     
     patience = 7  
     patience_counter = 0
 
