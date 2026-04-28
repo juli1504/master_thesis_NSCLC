@@ -16,6 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
+from imblearn.over_sampling import SMOTE
 
 # --- 1. CONFIGURATION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -103,9 +104,21 @@ def main():
     
     # --- 4. TRAINING & EVALUATION ---
     results = []
-    print("Training models...")
+    print("Applying SMOTE upsampling to the Training Set...")
+    
+    # Apply SMOTE but only to training data
+    smote = SMOTE(random_state=42)
+    X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+    
+    print(f"Original training shape: {np.bincount(y_train)}")
+    print(f"Balanced training shape: {np.bincount(y_train_balanced)}")
+    
+    print("\nTraining models on balanced data...")
     for name, model in models.items():
-        model.fit(X_train, y_train)
+        # Train the model on the BALANCED data
+        model.fit(X_train_balanced, y_train_balanced)
+        
+        # Evaluate on the UNBALANCED, real-world Test data
         metrics = evaluate_model(name, model, X_test, y_test)
         results.append(metrics)
         print(f"{name} finished.")
