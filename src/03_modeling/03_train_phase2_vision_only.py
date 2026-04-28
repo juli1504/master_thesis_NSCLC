@@ -5,7 +5,8 @@ Features:
 - Data Augmentation for class imbalance (NO WEIGHT PENALTIES)
 - Progressive architectural unfreezing (Block Dial)
 - Optimal thresholding via Youden's J Statistic
-- Clinical Early Stopping (Sens + Spec)
+- Clinical Early Stopping (Sens + Spec) using Validation Set
+- Strict Final Evaluation on untouched Test Set
 """
 
 import os
@@ -134,7 +135,7 @@ def build_vision_model(model_name, unfreeze_blocks, in_channels, num_classes=2):
 
     return model
 
-# --- 4. EVALUATION FUNCTION (Youden's J STATISTIC) ---
+# --- 4. EVALUATION FUNCTION (YOUDEN'S J STATISTIC) ---
 def evaluate(model, dataloader, device):
     model.eval()
     y_true = []
@@ -196,8 +197,10 @@ def main():
     le.fit(df['histology'])
     print(f"Target Encoding: {dict(zip(le.classes_, le.transform(le.classes_)))}\n")
 
+    # --- STRICT 3-WAY SPLIT ---
     train_df = df[df['dataset_split'] == 'Train']
-    test_df = df[df['dataset_split'] == 'Test']
+    val_df = df[df['dataset_split'] == 'Validation']
+    test_df = df[df['dataset_split'] == 'Test'] # Kept pure until the end
 
     # --- DATA AUGMENTATION ---
     train_transforms = T.Compose([
@@ -207,21 +210,20 @@ def main():
     ])
 
     train_dataset = CTPatchDataset(train_df, le, transform=train_transforms)
-    test_dataset = CTPatchDataset(test_df, le, transform=None) 
+    val_dataset = CTPatchDataset(val_df, le, transform=None) # No augmentation on Val
+    test_dataset = CTPatchDataset(test_df, le, transform=None) # No augmentation on Test
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     sample_img, _ = train_dataset[0]
     in_channels = sample_img.shape[0]
     print(f"Detected 2.5D Patches with {in_channels} channels.\n")
+    print(f"Data Splits -> Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}\n")
 
-    # Removed the complex weights calculating block entirely
     model = build_vision_model(args.model, args.unfreeze_blocks, in_channels).to(device)
-    
-    # Let the loss function run neutrally
     criterion = nn.CrossEntropyLoss()
-    
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.lr)
 
@@ -250,30 +252,47 @@ def main():
             
         epoch_loss = running_loss / len(train_loader.dataset)
         
-        test_acc, test_auc, test_sens, test_spec, best_thresh = evaluate(model, test_loader, device)
+        # Evaluate strictly on VALIDATION loader during training
+        val_acc, val_auc, val_sens, val_spec, best_thresh = evaluate(model, val_loader, device)
         
-        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Optimal Cutoff: {best_thresh:.2f} | AUC: {test_auc:.3f} | Acc: {test_acc*100:.1f}% | Sens: {test_sens*100:.1f}% | Spec: {test_spec*100:.1f}%")
+        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Optimal Val Cutoff: {best_thresh:.2f} | Val AUC: {val_auc:.3f} | Val Sens: {val_sens*100:.1f}% | Val Spec: {val_spec*100:.1f}%")
 
-        # --- EARLY STOPPING & SAVING (CLINICAL UTILITY) ---
-        current_clinical_score = test_sens + test_spec
+        # --- EARLY STOPPING & SAVING (BASED ON VAL SET) ---
+        current_clinical_score = val_sens + val_spec
         
         if current_clinical_score > best_clinical_score:
             best_clinical_score = current_clinical_score
-            best_auc_tracker = test_auc
+            best_auc_tracker = val_auc
             patience_counter = 0  
             
             torch.save(model.state_dict(), save_name)
-            print(f"New best clinical model saved! (Sens+Spec: {best_clinical_score:.3f} | AUC: {best_auc_tracker:.3f})")
+            print(f"   🌟 New best clinical model saved! (Val Sens+Spec: {best_clinical_score:.3f} | Val AUC: {best_auc_tracker:.3f})")
         else:
             patience_counter += 1
-            print(f"No improvement for {patience_counter} epochs.")
+            print(f"   ⚠️ No improvement for {patience_counter} epochs.")
             
         if patience_counter >= patience:
-            print(f"\nEARLY STOPPING TRIGGERED! The model stopped improving after {epoch+1} epochs.")
+            print(f"\n🛑 EARLY STOPPING TRIGGERED! The model stopped improving after {epoch+1} epochs.")
             break
 
-    print(f"\nFinished. The most clinically balanced {args.model.upper()} model achieved a Youden's Index of {best_clinical_score:.3f} (AUC: {best_auc_tracker:.3f})")
-    print(f"Model saved as: {save_name}")
+    # --- FINAL TEST EVALUATION ---
+    print("\n" + "="*70)
+    print("PHASE 2 FINAL RESULTS: EVALUATING ON UNTOUCHED TEST SET")
+    print("="*70)
+    
+    # Load the absolute best weights identified by the Validation set
+    model.load_state_dict(torch.load(save_name))
+    
+    # Evaluate exactly ONCE on the pure Test set
+    test_acc, test_auc, test_sens, test_spec, test_thresh = evaluate(model, test_loader, device)
+    
+    print(f"Model: {args.model.upper()} | Unfrozen Blocks: {args.unfreeze_blocks}")
+    print(f"Optimal Test Cutoff: {test_thresh:.2f}")
+    print(f"Test Accuracy:    {test_acc*100:.1f}%")
+    print(f"Test AUC:         {test_auc:.3f}")
+    print(f"Test Sensitivity: {test_sens*100:.1f}%")
+    print(f"Test Specificity: {test_spec*100:.1f}%")
+    print("="*70)
 
 if __name__ == "__main__":
     main()
