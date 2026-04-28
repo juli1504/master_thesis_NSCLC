@@ -3,7 +3,12 @@ Phase 1b: Global Baselines (Hyperparameter Tuned with Bounded Dynamic Expansion)
 
 This script uses GridSearchCV to automatically experiment with different
 hyperparameters for MLP and XGBoost. If a best parameter hits the edge 
-of a provided numeric grid (left or right), it dynamically expands the search space!
+of a provided numeric grid (left OR right), it dynamically expands the search space!
+
+Academic Rigor:
+- Uses Train + Validation sets exclusively for the tuning (GridSearchCV).
+- Implements imblearn.Pipeline to prevent SMOTE data leakage during cross-validation.
+- Evaluates the final ultimate models strictly on the untouched Test set.
 """
 
 import pandas as pd
@@ -16,6 +21,7 @@ from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
 from sklearn.model_selection import GridSearchCV
+from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
 import warnings
 warnings.filterwarnings('ignore') # Hides annoying deprecation warnings from Sklearn
@@ -30,9 +36,12 @@ def evaluate_model(name, model, X_test, y_test):
     y_pred = model.predict(X_test)
     
     acc = accuracy_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, y_probs)
-    
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+    try:
+        auc = roc_auc_score(y_test, y_probs)
+    except ValueError:
+        auc = 0.500
+        
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     
@@ -52,13 +61,13 @@ def dynamic_grid_search(model, param_grid, X, y, cv=5, max_expansions=3):
 
     # Hard limits for ALL parameters so the expander doesn't break algorithms
     param_bounds = {
-        'subsample': (0.1, 1.0),
-        'learning_rate': (0.00001, 1.0),
-        'learning_rate_init': (0.00001, 1.0),
-        'max_depth': (1, 50),
-        'n_estimators': (10, 5000),
-        'C': (0.0001, 10000.0),
-        'alpha': (0.000001, 10.0)
+        'clf__subsample': (0.1, 1.0),
+        'clf__learning_rate': (0.00001, 1.0),
+        'clf__learning_rate_init': (0.00001, 1.0),
+        'clf__max_depth': (1, 50),
+        'clf__n_estimators': (10, 5000),
+        'clf__C': (0.0001, 10000.0),
+        'clf__alpha': (0.000001, 10.0)
     }
 
     for attempt in range(max_expansions + 1):
@@ -81,12 +90,11 @@ def dynamic_grid_search(model, param_grid, X, y, cv=5, max_expansions=3):
                     step = sorted_vals[-1] - sorted_vals[-2]
                     new_val = best_val + step
                     
-                    # If it's a logarithmic grid (e.g. 0.01, 0.1), use multiplication
                     if sorted_vals[-2] > 0 and (sorted_vals[-1] / sorted_vals[-2] >= 2.0):
                         new_val = best_val * (sorted_vals[-1] / sorted_vals[-2])
                         
                     if isinstance(best_val, int): new_val = int(round(new_val))
-                    else: new_val = round(new_val, 6) # Prevent messy floats like 0.0099999
+                    else: new_val = round(new_val, 6)
                     
                     if new_val <= max_bound and new_val != best_val:
                         new_grid[param] = sorted_vals + [new_val]
@@ -99,7 +107,6 @@ def dynamic_grid_search(model, param_grid, X, y, cv=5, max_expansions=3):
                     step = sorted_vals[1] - sorted_vals[0]
                     new_val = best_val - step
                     
-                    # If linear math pushes into negatives OR it's a logarithmic grid, use division!
                     if sorted_vals[0] > 0:
                         ratio = sorted_vals[1] / sorted_vals[0]
                         if ratio >= 2.0 or new_val < min_bound:
@@ -125,7 +132,7 @@ def dynamic_grid_search(model, param_grid, X, y, cv=5, max_expansions=3):
             return gs
 
 def main():
-    print("Loading data for Hyperparameter Tuning...")
+    print("Loading data for Hyperparameter Tuning...\n")
     
     manifest_df = pd.read_csv(FILE_MANIFEST, sep=';', decimal=',')
     clinical_df = pd.read_csv(FILE_CLINICAL)
@@ -141,74 +148,87 @@ def main():
     X_raw = df[clinical_features].copy()
     X_encoded = pd.get_dummies(X_raw, columns=['Gender', 'Smoking status'], drop_first=True)
     
-    train_mask = df['dataset_split'] == 'Train'
-    test_mask = df['dataset_split'] == 'Test'
+    # --- STRICT HOLDOUT SPLIT ---
+    # Combine Train & Val for the Tuning phase
+    train_val_mask = df['dataset_split'].isin(['Train', 'Validation'])
+    test_mask = df['dataset_split'] == 'Test' # Locked strictly in the vault
     
-    X_train_raw = X_encoded[train_mask]
-    y_train = df.loc[train_mask, 'target']
+    X_train_val_raw = X_encoded[train_val_mask]
+    y_train_val = df.loc[train_val_mask, 'target']
+    
     X_test_raw = X_encoded[test_mask]
     y_test = df.loc[test_mask, 'target']
     
     scaler = StandardScaler()
     imputer = SimpleImputer(strategy='median')
     
-    X_train_imputed = imputer.fit_transform(X_train_raw)
+    # Impute and Scale based on the tuning data, apply to test data
+    X_train_val_imputed = imputer.fit_transform(X_train_val_raw)
     X_test_imputed = imputer.transform(X_test_raw)
-    X_train = scaler.fit_transform(X_train_imputed)
+    
+    X_train_val = scaler.fit_transform(X_train_val_imputed)
     X_test = scaler.transform(X_test_imputed)
     
-    # --- 3. SMOTE UPSAMPLING ---
-    smote = SMOTE(random_state=42)
-    X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
-    
-    # --- 4. EXPERIMENT GRIDS ---
+    # --- 3. THE EXPERIMENT GRIDS WITH PIPELINES (Prevents Leakage) ---
     models = {
         "Tuned Logistic Regression": (
-            LogisticRegression(random_state=42, class_weight='balanced', solver='liblinear'),
+            ImbPipeline([
+                ('smote', SMOTE(random_state=42)),
+                ('clf', LogisticRegression(random_state=42, class_weight='balanced', solver='liblinear'))
+            ]),
             {
-                'C': [0.01, 0.1, 1.0, 10.0, 100.0],  
-                'penalty': ['l1', 'l2'] 
+                'clf__C': [0.01, 0.1, 1.0, 10.0, 100.0],  
+                'clf__penalty': ['l1', 'l2'] 
             }
         ),
         "Tuned MLP (Neural Net)": (
-            MLPClassifier(max_iter=1000, random_state=42), 
+            ImbPipeline([
+                ('smote', SMOTE(random_state=42)),
+                ('clf', MLPClassifier(max_iter=1000, random_state=42))
+            ]), 
             {
-                'hidden_layer_sizes': [(16,), (32, 16), (64, 32), (128, 64, 32)],
-                'learning_rate_init': [0.001, 0.01, 0.05, 0.1],
-                'alpha': [0.0001, 0.001, 0.01, 0.1] 
+                'clf__hidden_layer_sizes': [(16,), (32, 16), (64, 32), (128, 64, 32)],
+                'clf__learning_rate_init': [0.001, 0.01, 0.05, 0.1],
+                'clf__alpha': [0.0001, 0.001, 0.01, 0.1] 
             }
         ),
         "Tuned XGBoost": (
-            XGBClassifier(eval_metric='logloss', random_state=42), 
+            ImbPipeline([
+                ('smote', SMOTE(random_state=42)),
+                ('clf', XGBClassifier(eval_metric='logloss', random_state=42))
+            ]), 
             {
-                'max_depth': [2, 3, 5, 7, 10], 
-                'learning_rate': [0.01, 0.05, 0.1, 0.4, 0.7],
-                'n_estimators': [50, 100, 150, 200, 300, 500],
-                'subsample': [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] 
+                'clf__max_depth': [2, 3, 5, 7, 10], 
+                'clf__learning_rate': [0.01, 0.05, 0.1, 0.4, 0.7],
+                'clf__n_estimators': [50, 100, 150, 200, 300, 500],
+                'clf__subsample': [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] 
             }
         )
     }
     
-    # --- 5. AUTOMATED TRAINING & TUNING ---
+    # --- 4. AUTOMATED TRAINING & TUNING ---
     results = []
     print("\nStarting Dynamic Grid Search (Auto-expanding edges with Math Guardrails)...")
     for name, (model, param_grid) in models.items():
         print(f"Tuning {name}...")
         
-        gs = dynamic_grid_search(model, param_grid, X_train_balanced, y_train_balanced, cv=5, max_expansions=3)
+        # We pass the full Train+Val set; GridSearchCV handles internal splitting naturally
+        gs = dynamic_grid_search(model, param_grid, X_train_val, y_train_val, cv=5, max_expansions=3)
         best_model = gs.best_estimator_
         
+        # Evaluate strictly on the untouched Test set
         metrics = evaluate_model(name, best_model, X_test, y_test)
         results.append(metrics)
-        print(f"Finished. Ultimate settings found: {gs.best_params_}")
+        print(f"Finished! Ultimate settings found: {gs.best_params_}")
         
-    # --- 6. DISPLAY RESULTS ---
-    print("\n" + "="*75)
+    # --- 5. DISPLAY RESULTS ---
+    print("\n" + "="*80)
     print("PHASE 1 RESULTS: DYNAMICALLY TUNED CLINICAL BASELINES")
-    print("="*75)
+    print("(Evaluated strictly on the untouched Test Set)")
+    print("="*80)
     results_df = pd.DataFrame(results)
     print(results_df.to_string(index=False))
-    print("="*75)
+    print("="*80)
 
 if __name__ == "__main__":
     main()
