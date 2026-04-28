@@ -25,13 +25,15 @@ warnings.filterwarnings('ignore')
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 FILE_MANIFEST = PROJECT_ROOT / "data" / "processed" / "manifest.csv"
 
+import torchvision.transforms as T
+
 # --- 2. DATASET DEFINITION ---
 class CTPatchDataset(Dataset):
-    def __init__(self, manifest_df, label_encoder):
-        # Only keep patients where a patch was successfully extracted
+    def __init__(self, manifest_df, label_encoder, transform=None):
         self.df = manifest_df[manifest_df['patch_extracted'] == True].copy()
         self.df.reset_index(drop=True, inplace=True)
         self.le = label_encoder
+        self.transform = transform # Store the augmentation rules
         
     def __len__(self):
         return len(self.df)
@@ -39,16 +41,17 @@ class CTPatchDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         
-        # Load the 2.5D numpy array (Shape usually: Channels, Height, Width)
         patch_path = PROJECT_ROOT / row['patch_file_path']
         patch_array = np.load(patch_path).astype(np.float32)
         
-        # Convert to PyTorch Tensor
         image_tensor = torch.tensor(patch_array)
         
-        # Ensure it has the shape (Channels, Height, Width)
-        if image_tensor.shape[-1] < 10:  # Assuming channels < 10 (like 7 slices)
+        if image_tensor.shape[-1] < 10: 
             image_tensor = image_tensor.permute(2, 0, 1)
+            
+        # Apply the physical augmentations (flipping/rotating) if they exist
+        if self.transform:
+            image_tensor = self.transform(image_tensor)
             
         label = self.le.transform([row['histology']])[0]
         label_tensor = torch.tensor(label, dtype=torch.long)
@@ -203,8 +206,16 @@ def main():
     train_df = df[df['dataset_split'] == 'Train']
     test_df = df[df['dataset_split'] == 'Test']
 
-    train_dataset = CTPatchDataset(train_df, le)
-    test_dataset = CTPatchDataset(test_df, le)
+    # Define the Data Augmentation pipeline (Spatial only, no color distortion for CTs)
+    train_transforms = T.Compose([
+        T.RandomHorizontalFlip(p=0.5),
+        T.RandomVerticalFlip(p=0.5),
+        T.RandomRotation(degrees=15)
+    ])
+
+    # Apply the transforms ONLY to the training set
+    train_dataset = CTPatchDataset(train_df, le, transform=train_transforms)
+    test_dataset = CTPatchDataset(test_df, le, transform=None) # Keep test data pure!
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
@@ -275,7 +286,7 @@ def main():
             print(f"\nEarly stopping triggered. The model stopped improving after {epoch+1} epochs.")
             break
 
-    print(f"\nFinished! The best {args.model.upper()} model achieved an AUC of {best_auc:.3f}")
+    print(f"\nFinished. The best {args.model.upper()} model achieved an AUC of {best_auc:.3f}")
     print(f"Model saved as: {save_name}")
 
 if __name__ == "__main__":
