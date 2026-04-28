@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
@@ -83,12 +84,19 @@ def main():
     
     # --- 4. EXPERIMENT GRIDS ---
     models = {
+        "Tuned Logistic Regression": (
+            LogisticRegression(random_state=42, class_weight='balanced', solver='liblinear'),
+            {
+                'C': [0.01, 0.1, 1.0, 10.0],  # Regularization strength
+                'penalty': ['l1', 'l2']       # Shrinkage type
+            }
+        ),
         "Tuned MLP (Neural Net)": (
             MLPClassifier(max_iter=1000, random_state=42), 
             {
                 'hidden_layer_sizes': [(16,), (32, 16), (64, 32)],
                 'learning_rate_init': [0.001, 0.01],
-                'alpha': [0.0001, 0.01] # Helps prevent overfitting
+                'alpha': [0.0001, 0.01] 
             }
         ),
         "Tuned XGBoost": (
@@ -101,7 +109,7 @@ def main():
             }
         )
     }
-    
+
     # --- 5. AUTOMATED TRAINING & TUNING ---
     results = []
     print("\nStarting Automated Grid Search (This will test dozens of combinations)...")
