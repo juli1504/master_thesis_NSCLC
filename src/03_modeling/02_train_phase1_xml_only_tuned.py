@@ -1,8 +1,9 @@
 """
-Phase 1b: Global Baselines (Hyperparameter Tuned)
+Phase 1b: Global Baselines (Hyperparameter Tuned with Dynamic Expansion)
 
 This script uses GridSearchCV to automatically experiment with different
-hyperparameters for MLP and XGBoost. It finds the optimal settings 
+hyperparameters for MLP and XGBoost. If a best parameter hits the edge 
+of a provided numeric grid, it dynamically expands the search space. It finds the optimal settings 
 using K-Fold cross-validation on the SMOTE-balanced training data.
 """
 
@@ -43,6 +44,58 @@ def evaluate_model(name, model, X_test, y_test):
         "Specificity": f"{specificity * 100:.1f}%"
     }
 
+def dynamic_grid_search(model, param_grid, X, y, cv=5, max_expansions=3):
+    """
+    Runs a GridSearchCV. If the best numeric parameter is at the edge of the grid,
+    it dynamically expands the grid and searches again.
+    """
+    current_grid = param_grid.copy()
+
+    for attempt in range(max_expansions + 1):
+        gs = GridSearchCV(model, current_grid, cv=cv, scoring='roc_auc', n_jobs=-1)
+        gs.fit(X, y)
+        best_params = gs.best_params_
+
+        expanded = False
+        new_grid = {}
+
+        # Check every parameter to see if it hit an edge
+        for param, values in current_grid.items():
+            # We only expand lists of standard numbers (ignore strings or tuples like hidden_layer_sizes)
+            if isinstance(values, list) and len(values) > 1 and isinstance(values[0], (int, float)) and not isinstance(values[0], bool):
+                sorted_vals = sorted(values)
+                best_val = best_params[param]
+
+                # If it hit the UPPER edge
+                if best_val == sorted_vals[-1]:
+                    step = sorted_vals[-1] - sorted_vals[-2]
+                    new_grid[param] = sorted_vals + [best_val + step]
+                    expanded = True
+                
+                # If it hit the LOWER edge
+                elif best_val == sorted_vals[0]:
+                    step = sorted_vals[1] - sorted_vals[0]
+                    new_val = best_val - step
+                    # Prevent impossible negative values (like negative learning rates or tree depths)
+                    if new_val > 0: 
+                        new_grid[param] = [new_val] + sorted_vals
+                        expanded = True
+                    else:
+                        new_grid[param] = values
+                else:
+                    new_grid[param] = values
+            else:
+                new_grid[param] = values
+
+        # If an edge was hit and we haven't reached the limit, run it again!
+        if expanded and attempt < max_expansions:
+            print(f"Edge hit detected! Expanding grid space to: {new_grid}")
+            current_grid = new_grid
+        else:
+            if expanded and attempt == max_expansions:
+                print("Max grid expansions reached. Stopping search.")
+            return gs # Return the final optimized grid search object
+
 def main():
     print("Loading data for Hyperparameter Tuning...")
     
@@ -82,21 +135,21 @@ def main():
     smote = SMOTE(random_state=42)
     X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
     
-    # --- 4. EXPERIMENT GRIDS ---
+    # --- 4. THE EXPERIMENT GRIDS ---
     models = {
         "Tuned Logistic Regression": (
             LogisticRegression(random_state=42, class_weight='balanced', solver='liblinear'),
             {
-                'C': [0.01, 0.1, 1.0, 10.0],  # Regularization strength
-                'penalty': ['l1', 'l2']       # Shrinkage type
+                'C': [0.01, 0.1, 1.0, 10.0],  
+                'penalty': ['l1', 'l2']       
             }
         ),
         "Tuned MLP (Neural Net)": (
             MLPClassifier(max_iter=1000, random_state=42), 
             {
                 'hidden_layer_sizes': [(16,), (32, 16), (64, 32)],
-                'learning_rate_init': [0.001, 0.01],
-                'alpha': [0.0001, 0.01] 
+                'learning_rate_init': [0.001, 0.01, 0.02],
+                'alpha': [0.0001, 0.001, 0.01] 
             }
         ),
         "Tuned XGBoost": (
@@ -104,32 +157,30 @@ def main():
             {
                 'max_depth': [2, 3, 5],
                 'learning_rate': [0.01, 0.05, 0.1],
-                'n_estimators': [50, 100],
-                'subsample': [0.7, 1.0] 
+                'n_estimators': [50, 100, 150],
+                'subsample': [0.7, 0.85, 1.0] 
             }
         )
     }
-
+    
     # --- 5. AUTOMATED TRAINING & TUNING ---
     results = []
-    print("\nStarting Automated Grid Search (This will test dozens of combinations)...")
+    print("\nStarting Dynamic Grid Search (Auto-expanding edges)...")
     for name, (model, param_grid) in models.items():
         print(f"Tuning {name}...")
         
-        # cv=5 means 5-Fold Cross Validation. n_jobs=-1 uses all your laptop's CPU cores.
-        gs = GridSearchCV(model, param_grid, cv=5, scoring='roc_auc', n_jobs=-1)
-        gs.fit(X_train_balanced, y_train_balanced)
+        # Replace normal GridSearchCV with our custom Dynamic version
+        gs = dynamic_grid_search(model, param_grid, X_train_balanced, y_train_balanced, cv=5, max_expansions=3)
         
         best_model = gs.best_estimator_
         
-        # Evaluate the absolute best model on the unseen Test Set
         metrics = evaluate_model(name, best_model, X_test, y_test)
         results.append(metrics)
-        print(f"Finished. Best settings found: {gs.best_params_}")
+        print(f"Finished! Ultimate settings found: {gs.best_params_}")
         
     # --- 6. DISPLAY RESULTS ---
     print("\n" + "="*75)
-    print("PHASE 1 RESULTS: TUNED CLINICAL BASELINES")
+    print("PHASE 1 RESULTS: DYNAMICALLY TUNED CLINICAL BASELINES")
     print("="*75)
     results_df = pd.DataFrame(results)
     print(results_df.to_string(index=False))
