@@ -17,7 +17,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
+from sklearn.metrics import accuracy_score, roc_curve, roc_auc_score, confusion_matrix
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -144,7 +144,7 @@ def build_vision_model(model_name, unfreeze_blocks, in_channels, num_classes=2):
 
     return model
 
-# --- 4. EVALUATION FUNCTION ---
+# --- 4. EVALUATION FUNCTION (with Youden's J) ---
 def evaluate(model, dataloader, device):
     model.eval()
     y_true = []
@@ -154,22 +154,32 @@ def evaluate(model, dataloader, device):
         for images, labels in dataloader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
-            probs = torch.softmax(outputs, dim=1)[:, 1] # Probability of Class 1 (Squamous)
+            probs = torch.softmax(outputs, dim=1)[:, 1] 
             
             y_true.extend(labels.cpu().numpy())
             y_probs.extend(probs.cpu().numpy())
             
     y_true = np.array(y_true)
     y_probs = np.array(y_probs)
-    y_pred = (y_probs > 0.5).astype(int)
+    
+    # Calculate AUC first (Threshold independent)
+    auc = roc_auc_score(y_true, y_probs)
+    
+    # Calculate Optimal Threshold using Youden's J Statistic
+    fpr, tpr, thresholds = roc_curve(y_true, y_probs)
+    youden_j = tpr - fpr
+    optimal_idx = np.argmax(youden_j)
+    best_thresh = thresholds[optimal_idx]
+    
+    # Apply the scientifically optimal threshold instead of 0.5
+    y_pred = (y_probs >= best_thresh).astype(int)
     
     acc = accuracy_score(y_true, y_pred)
-    auc = roc_auc_score(y_true, y_probs)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     
-    return acc, auc, sens, spec
+    return acc, auc, sens, spec, best_thresh
 
 # --- 5. MAIN SCRIPT ---
 def main():
@@ -265,9 +275,9 @@ def main():
         epoch_loss = running_loss / len(train_loader.dataset)
         
         # Evaluate on Test Set after each epoch
-        test_acc, test_auc, test_sens, test_spec = evaluate(model, test_loader, device)
+        test_acc, test_auc, test_sens, test_spec, best_thresh = evaluate(model, test_loader, device)
         
-        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Test AUC: {test_auc:.3f} | Acc: {test_acc*100:.1f}% | Sens: {test_sens*100:.1f}% | Spec: {test_spec*100:.1f}%")
+        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Test AUC: {test_auc:.3f} | Optimal Cutoff: {best_thresh:.2f} | Acc: {test_acc*100:.1f}% | Sens: {test_sens*100:.1f}% | Spec: {test_spec*100:.1f}%")
 
         # --- EARLY STOPPING & SAVING ---
         if test_auc > best_auc:
