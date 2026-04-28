@@ -3,7 +3,7 @@ Phase 1b: Global Baselines (Hyperparameter Tuned with Bounded Dynamic Expansion)
 
 This script uses GridSearchCV to automatically experiment with different
 hyperparameters for MLP and XGBoost. If a best parameter hits the edge 
-of a provided numeric grid (left OR right), it dynamically expands the search space!
+of a provided numeric grid (left or right), it dynamically expands the search space!
 """
 
 import pandas as pd
@@ -161,7 +161,7 @@ def main():
     smote = SMOTE(random_state=42)
     X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
     
-    # --- 4. THE EXPERIMENT GRIDS ---
+    # --- 4. EXPERIMENT GRIDS ---
     models = {
         "Tuned Logistic Regression": (
             LogisticRegression(random_state=42, class_weight='balanced', solver='liblinear'),
@@ -200,7 +200,7 @@ def main():
         
         metrics = evaluate_model(name, best_model, X_test, y_test)
         results.append(metrics)
-        print(f"Finished! Ultimate settings found: {gs.best_params_}")
+        print(f"Finished. Ultimate settings found: {gs.best_params_}")
         
     # --- 6. DISPLAY RESULTS ---
     print("\n" + "="*75)
