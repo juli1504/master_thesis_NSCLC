@@ -92,7 +92,7 @@ def main():
             }
         ),
         "Tuned XGBoost": (
-            XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42), 
+            XGBClassifier(eval_metric='logloss', random_state=42), 
             {
                 'max_depth': [2, 3, 5],
                 'learning_rate': [0.01, 0.05, 0.1],
