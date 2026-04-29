@@ -14,7 +14,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve, f1_score
 import torch.nn as nn
 import warnings
 warnings.filterwarnings('ignore')
@@ -72,25 +72,31 @@ def evaluate(model, dataloader, device):
         for images, labels in dataloader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
-            probs = torch.softmax(outputs, dim=1)[:, 1] 
+            probs = torch.softmax(outputs, dim=1)[:, 1]
             y_true.extend(labels.cpu().numpy())
             y_probs.extend(probs.cpu().numpy())
             
     y_true, y_probs = np.array(y_true), np.array(y_probs)
     
-    try: auc = roc_auc_score(y_true, y_probs)
-    except ValueError: auc = 0.5  
+    try:
+        auc = roc_auc_score(y_true, y_probs)
+    except ValueError:
+        auc = 0.5
     
     fpr, tpr, thresholds = roc_curve(y_true, y_probs)
     youden_j = tpr - fpr
     best_thresh = thresholds[np.argmax(youden_j)]
     
     y_pred = (y_probs >= best_thresh).astype(int)
+    
+    acc = accuracy_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     
-    return auc, sens, spec
+    return acc, auc, f1, sens, spec
 
 # --- 5. MAIN SCRIPT ---
 def main():
@@ -127,12 +133,14 @@ def main():
                 model = build_vision_model(arch, in_channels).to(device)
                 model.load_state_dict(torch.load(model_file, map_location=device))
                 
-                auc, sens, spec = evaluate(model, test_loader, device)
-                
+                acc, auc, f1, sens, spec = evaluate(model, test_loader, device)
+
                 results.append({
                     "Architecture": arch.upper(),
                     "Unfrozen Blocks": level,
+                    "Accuracy": f"{acc*100:.1f}%",
                     "AUC": f"{auc:.3f}",
+                    "F1": f"{f1*100:.1f}%",
                     "Sensitivity": f"{sens*100:.1f}%",
                     "Specificity": f"{spec*100:.1f}%",
                     "Sens+Spec (Score)": f"{(sens+spec):.3f}"
