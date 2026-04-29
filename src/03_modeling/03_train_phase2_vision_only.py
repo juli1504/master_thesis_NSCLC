@@ -1,15 +1,17 @@
 """
 Phase 2: Vision Baselines and Fine-Tuning (2.5D CT Patches)
 Features: 
+- Global Seeding for absolute PyTorch reproducibility
 - Dynamic 7-channel inputs
-- Data Augmentation for class imbalance (NO WEIGHT PENALTIES)
 - Progressive architectural unfreezing (Block Dial)
 - Optimal thresholding via Youden's J Statistic
+- F1-Score Evaluation added for Subtyping
 - Clinical Early Stopping (Sens + Spec) using Validation Set
 - Strict Final Evaluation on untouched Test Set
 """
 
 import os
+import random
 import argparse
 import numpy as np
 import pandas as pd
@@ -23,13 +25,25 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 import torchvision.transforms as T
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve, f1_score
 import warnings
 warnings.filterwarnings('ignore')
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & SEEDING ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 FILE_MANIFEST = PROJECT_ROOT / "data" / "processed" / "manifest.csv"
+
+def set_seed(seed=42):
+    """Locks down all random number generators for absolute reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # For multi-GPU
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    # Forces deterministic algorithms (can be slightly slower, but required for science)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # --- 2. DATASET DEFINITION ---
 class CTPatchDataset(Dataset):
@@ -135,7 +149,7 @@ def build_vision_model(model_name, unfreeze_blocks, in_channels, num_classes=2):
 
     return model
 
-# --- 4. EVALUATION FUNCTION (YOUDEN'S J STATISTIC) ---
+# --- 4. EVALUATION FUNCTION (Youden's J STATISTIC + F1) ---
 def evaluate(model, dataloader, device):
     model.eval()
     y_true = []
@@ -166,11 +180,13 @@ def evaluate(model, dataloader, device):
     y_pred = (y_probs >= best_thresh).astype(int)
     
     acc = accuracy_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     
-    return acc, auc, sens, spec, best_thresh
+    return acc, auc, f1, sens, spec, best_thresh
 
 # --- 5. MAIN SCRIPT ---
 def main():
@@ -181,6 +197,9 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=0.001)
     args = parser.parse_args()
+
+    # Important: Lock down all random states!
+    set_seed(42)
 
     print(f"=== STARTING PHASE 2 RUN ===")
     print(f"Model: {args.model.upper()} | Unfrozen Blocks: {args.unfreeze_blocks} | Epochs: {args.epochs}")
@@ -213,6 +232,7 @@ def main():
     val_dataset = CTPatchDataset(val_df, le, transform=None) # No augmentation on Val
     test_dataset = CTPatchDataset(test_df, le, transform=None) # No augmentation on Test
 
+    # Since we set the global seed, shuffle=True will now shuffle identically every time
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
@@ -253,9 +273,9 @@ def main():
         epoch_loss = running_loss / len(train_loader.dataset)
         
         # Evaluate strictly on VALIDATION loader during training
-        val_acc, val_auc, val_sens, val_spec, best_thresh = evaluate(model, val_loader, device)
+        val_acc, val_auc, val_f1, val_sens, val_spec, best_thresh = evaluate(model, val_loader, device)
         
-        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Optimal Val Cutoff: {best_thresh:.2f} | Val AUC: {val_auc:.3f} | Val Sens: {val_sens*100:.1f}% | Val Spec: {val_spec*100:.1f}%")
+        print(f"Epoch {epoch+1} Loss: {epoch_loss:.4f} | Optimal Val Cutoff: {best_thresh:.2f} | Val AUC: {val_auc:.3f} | Val F1: {val_f1*100:.1f}% | Val Sens: {val_sens*100:.1f}% | Val Spec: {val_spec*100:.1f}%")
 
         # --- EARLY STOPPING & SAVING (BASED ON VAL SET) ---
         current_clinical_score = val_sens + val_spec
@@ -272,7 +292,7 @@ def main():
             print(f"   ⚠️ No improvement for {patience_counter} epochs.")
             
         if patience_counter >= patience:
-            print(f"\n🛑 EARLY STOPPING TRIGGERED! The model stopped improving after {epoch+1} epochs.")
+            print(f"\nEARLY STOPPING TRIGGERED! The model stopped improving after {epoch+1} epochs.")
             break
 
     # --- FINAL TEST EVALUATION ---
@@ -283,12 +303,13 @@ def main():
     # Load the absolute best weights identified by the Validation set
     model.load_state_dict(torch.load(save_name))
     
-    # Evaluate exactly ONCE on the pure Test set
-    test_acc, test_auc, test_sens, test_spec, test_thresh = evaluate(model, test_loader, device)
+    # Evaluate exactly once on pure Test set
+    test_acc, test_auc, test_f1, test_sens, test_spec, test_thresh = evaluate(model, test_loader, device)
     
     print(f"Model: {args.model.upper()} | Unfrozen Blocks: {args.unfreeze_blocks}")
     print(f"Optimal Test Cutoff: {test_thresh:.2f}")
     print(f"Test Accuracy:    {test_acc*100:.1f}%")
+    print(f"Test F1-Score:    {test_f1*100:.1f}%")
     print(f"Test AUC:         {test_auc:.3f}")
     print(f"Test Sensitivity: {test_sens*100:.1f}%")
     print(f"Test Specificity: {test_spec*100:.1f}%")
