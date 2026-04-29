@@ -1,15 +1,16 @@
 """
-Phase 3: Multimodal Late Fusion (Clinical + Vision)
+Phase 3: Multimodal Late Fusion (Simple 50/50 Averaging)
 
 This script recreates the absolute best models from Phase 1 and Phase 2:
 - Clinical: Tuned MLP (hidden_layers=(64, 32), lr=0.1, alpha=0.01)
-- Vision: DenseNet-121 (Unfrozen Blocks: 4)
+- Vision: ResNet-18 (Unfrozen Blocks: 4)
 
 It extracts the prediction probabilities from both models on the strict Test set,
-averages them together (Late Fusion), and calculates the final Multimodal metrics.
+averages them together equally (50/50), and calculates the final Multimodal metrics.
 """
 
 import os
+import random
 import torch
 import pandas as pd
 import numpy as np
@@ -20,17 +21,28 @@ import torch.nn as nn
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve, f1_score
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
 import warnings
 warnings.filterwarnings('ignore')
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & SEEDING ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 FILE_MANIFEST = PROJECT_ROOT / "data" / "processed" / "manifest.csv"
 FILE_CLINICAL = PROJECT_ROOT / "data" / "raw" / "clinical" / "NSCLCR01Radiogenomic_DATA_LABELS_2018-05-22_1500-shifted.csv"
-VISION_WEIGHTS = PROJECT_ROOT / "best_densenet_unfrozen_4.pth"
+VISION_WEIGHTS = PROJECT_ROOT / "best_resnet_unfrozen_4.pth"
+
+def set_seed(seed=42):
+    """Locks down all random number generators for absolute reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) 
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # --- 2. VISION DATASET & BUILDER ---
 class CTPatchDataset(Dataset):
@@ -55,16 +67,21 @@ class CTPatchDataset(Dataset):
         label_tensor = torch.tensor(label, dtype=torch.long)
         return image_tensor, label_tensor
 
-def build_densenet(in_channels, num_classes=2):
-    model = models.densenet121()
-    model.features.conv0 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-    model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+def build_resnet(in_channels, num_classes=2):
+    model = models.resnet18()
+    original_conv = model.conv1
+    model.conv1 = nn.Conv2d(in_channels, original_conv.out_channels, 
+                            kernel_size=original_conv.kernel_size, stride=original_conv.stride, 
+                            padding=original_conv.padding, bias=False)
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 # --- 3. MAIN FUSION SCRIPT ---
 def main():
+    set_seed(42)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"=== STARTING PHASE 3: MULTIMODAL LATE FUSION ===")
+    print(f"=== STARTING PHASE 3: MULTIMODAL LATE FUSION (50/50 AVERAGE) ===")
     print(f"Using Hardware: {device}\n")
 
     # 1. Load and Merge Data
@@ -108,14 +125,14 @@ def main():
     probs_clinical = clinical_pipeline.predict_proba(X_test_scaled)[:, 1]
 
     # --- PILLAR 2: GET VISION PROBABILITIES ---
-    print("Loading Phase 2 Champion (DenseNet Level 4)...")
+    print("Loading Phase 2 Champion (ResNet Level 4)...")
     test_df = df[test_mask].copy()
     test_dataset = CTPatchDataset(test_df, le)
     # Important: shuffle=False ensures the images align perfectly with the clinical rows!
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False) 
     
     in_channels = test_dataset[0][0].shape[0]
-    vision_model = build_densenet(in_channels).to(device)
+    vision_model = build_resnet(in_channels).to(device)
     vision_model.load_state_dict(torch.load(VISION_WEIGHTS, map_location=device))
     vision_model.eval()
     
@@ -129,8 +146,8 @@ def main():
             
     probs_vision = np.array(probs_vision)
 
-    # --- PILLAR 3: LATE FUSION (AVERAGING) ---
-    print("Performing Late Fusion...")
+    # --- PILLAR 3: LATE FUSION (50/50 AVERAGING) ---
+    print("Performing Late Fusion (50/50 Averaging)...")
     probs_fusion = (probs_clinical + probs_vision) / 2.0
     
     y_test_array = y_test.values
@@ -145,22 +162,24 @@ def main():
     # Metrics
     auc_fusion = roc_auc_score(y_test_array, probs_fusion)
     acc_fusion = accuracy_score(y_test_array, y_pred_fusion)
+    f1_fusion = f1_score(y_test_array, y_pred_fusion)
     tn, fp, fn, tp = confusion_matrix(y_test_array, y_pred_fusion, labels=[0, 1]).ravel()
     sens_fusion = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     spec_fusion = tn / (tn + fp) if (tn + fp) > 0 else 0.0
 
     # --- DISPLAY FINAL RESULTS ---
-    print("\n" + "="*80)
-    print("PHASE 3: THE FINAL MULTIMODAL SHOWDOWN")
-    print("="*80)
+    print("\n" + "="*85)
+    print("PHASE 3: THE FINAL MULTIMODAL RESULTS (50/50 AVERAGE)")
+    print("="*85)
     print(f"{'Metric':<15} | {'Phase 1 (Clinical)':<20} | {'Phase 2 (Vision)':<18} | {'Phase 3 (Fusion)':<15}")
-    print("-" * 80)
-    print(f"{'AUC':<15} | {'0.652':<20} | {'0.730':<18} | {auc_fusion:.3f}")
+    print("-" * 85)
+    # Hardcoded values updated to the honest Phase 1b and Phase 2 ResNet Champions
+    print(f"{'AUC':<15} | {'0.652':<20} | {'0.757':<18} | {auc_fusion:.3f}")
     print(f"{'Sensitivity':<15} | {'80.0%':<20} | {'100.0%':<18} | {sens_fusion*100:.1f}%")
     print(f"{'Specificity':<15} | {'47.8%':<20} | {'65.2%':<18} | {spec_fusion*100:.1f}%")
+    print(f"{'F1-Score':<15} | {'38.1%':<20} | {'55.6%':<18} | {f1_fusion*100:.1f}%")
     print(f"{'Accuracy':<15} | {'53.6%':<20} | {'71.4%':<18} | {acc_fusion*100:.1f}%")
-    print(f"{'Score (Sens+Spec)':<13} | {'1.278':<20} | {'1.652':<18} | {(sens_fusion+spec_fusion):.3f}")
-    print("="*80)
+    print("="*85)
 
 if __name__ == "__main__":
     main()
