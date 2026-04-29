@@ -19,7 +19,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, f1_score
 from sklearn.model_selection import GridSearchCV
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
@@ -44,11 +44,13 @@ def evaluate_model(name, model, X_test, y_test):
     tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    f1 = f1_score(y_test, y_pred)  # Macro-averaged F1 by default for binary classification
     
     return {
         "Model": name,
         "Accuracy": f"{acc * 100:.1f}%",
         "AUC": f"{auc:.3f}",
+        "F1": f"{f1 * 100:.1f}%",  # Added F1 score
         "Sensitivity": f"{sensitivity * 100:.1f}%",
         "Specificity": f"{specificity * 100:.1f}%"
     }
