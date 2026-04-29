@@ -1,5 +1,5 @@
 """
-Phase 3: Multimodal Late Fusion (Clinical + Vision)
+Phase 3b: Multimodal Late Fusion (AUC-Weighted Average)
 
 This script implements AUC-Weighted Late Fusion. 
 Instead of a 50/50 split, the models are assigned a "Voting Weight" 
@@ -8,6 +8,7 @@ superior Vision model a mathematically higher impact on the final decision.
 """
 
 import os
+import random
 import torch
 import pandas as pd
 import numpy as np
@@ -18,21 +19,32 @@ import torch.nn as nn
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix, roc_curve, f1_score
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.over_sampling import SMOTE
 import warnings
 warnings.filterwarnings('ignore')
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & SEEDING ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 FILE_MANIFEST = PROJECT_ROOT / "data" / "processed" / "manifest.csv"
 FILE_CLINICAL = PROJECT_ROOT / "data" / "raw" / "clinical" / "NSCLCR01Radiogenomic_DATA_LABELS_2018-05-22_1500-shifted.csv"
-VISION_WEIGHTS = PROJECT_ROOT / "best_densenet_unfrozen_4.pth"
+VISION_WEIGHTS = PROJECT_ROOT / "best_resnet_unfrozen_4.pth"
 
-# AUC Scores from Phase 1 and 2
+# AUC Scores from Phase 1b and Phase 2
 AUC_CLINICAL = 0.652
-AUC_VISION = 0.730
+AUC_VISION = 0.757
+
+def set_seed(seed=42):
+    """Locks down all random number generators for absolute reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) 
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # --- 2. VISION DATASET & BUILDER ---
 class CTPatchDataset(Dataset):
@@ -57,16 +69,22 @@ class CTPatchDataset(Dataset):
         label_tensor = torch.tensor(label, dtype=torch.long)
         return image_tensor, label_tensor
 
-def build_densenet(in_channels, num_classes=2):
-    model = models.densenet121()
-    model.features.conv0 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-    model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+def build_resnet(in_channels, num_classes=2):
+    model = models.resnet18()
+    original_conv = model.conv1
+    model.conv1 = nn.Conv2d(in_channels, original_conv.out_channels, 
+                            kernel_size=original_conv.kernel_size, stride=original_conv.stride, 
+                            padding=original_conv.padding, bias=False)
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 # --- 3. MAIN FUSION SCRIPT ---
 def main():
+    # Lock the environment!
+    set_seed(42)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"=== STARTING PHASE 3: AUC-WEIGHTED LATE FUSION ===")
+    print(f"=== STARTING PHASE 3b: AUC-WEIGHTED LATE FUSION ===")
     print(f"Using Hardware: {device}\n")
 
     # 1. Load and Merge Data
@@ -110,13 +128,13 @@ def main():
     probs_clinical = clinical_pipeline.predict_proba(X_test_scaled)[:, 1]
 
     # --- PILLAR 2: GET VISION PROBABILITIES ---
-    print("Loading Phase 2 Champion (DenseNet Level 4)...")
+    print("Loading Phase 2 Champion (ResNet Level 4)...")
     test_df = df[test_mask].copy()
     test_dataset = CTPatchDataset(test_df, le)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False) 
     
     in_channels = test_dataset[0][0].shape[0]
-    vision_model = build_densenet(in_channels).to(device)
+    vision_model = build_resnet(in_channels).to(device)
     vision_model.load_state_dict(torch.load(VISION_WEIGHTS, map_location=device))
     vision_model.eval()
     
@@ -154,22 +172,23 @@ def main():
     # Metrics
     auc_fusion = roc_auc_score(y_test_array, probs_fusion)
     acc_fusion = accuracy_score(y_test_array, y_pred_fusion)
+    f1_fusion = f1_score(y_test_array, y_pred_fusion)
     tn, fp, fn, tp = confusion_matrix(y_test_array, y_pred_fusion, labels=[0, 1]).ravel()
     sens_fusion = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     spec_fusion = tn / (tn + fp) if (tn + fp) > 0 else 0.0
 
     # --- DISPLAY FINAL RESULTS ---
-    print("\n" + "="*80)
-    print("PHASE 3: THE FINAL MULTIMODAL SHOWDOWN (AUC-WEIGHTED)")
-    print("="*80)
+    print("\n" + "="*85)
+    print("PHASE 3b: FINAL MULTIMODAL RESULTS (AUC-WEIGHTED)")
+    print("="*85)
     print(f"{'Metric':<15} | {'Phase 1 (Clinical)':<20} | {'Phase 2 (Vision)':<18} | {'Phase 3 (Fusion)':<15}")
-    print("-" * 80)
-    print(f"{'AUC':<15} | {'0.652':<20} | {'0.730':<18} | {auc_fusion:.3f}")
+    print("-" * 85)
+    print(f"{'AUC':<15} | {AUC_CLINICAL:<20.3f} | {AUC_VISION:<18.3f} | {auc_fusion:.3f}")
     print(f"{'Sensitivity':<15} | {'80.0%':<20} | {'100.0%':<18} | {sens_fusion*100:.1f}%")
     print(f"{'Specificity':<15} | {'47.8%':<20} | {'65.2%':<18} | {spec_fusion*100:.1f}%")
+    print(f"{'F1-Score':<15} | {'38.1%':<20} | {'55.6%':<18} | {f1_fusion*100:.1f}%")
     print(f"{'Accuracy':<15} | {'53.6%':<20} | {'71.4%':<18} | {acc_fusion*100:.1f}%")
-    print(f"{'Score (Sens+Spec)':<17} | {'1.278':<18} | {'1.652':<18} | {(sens_fusion+spec_fusion):.3f}")
-    print("="*80)
+    print("="*85)
 
 if __name__ == "__main__":
     main()

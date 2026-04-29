@@ -169,7 +169,7 @@ def main():
 
     # --- DISPLAY FINAL RESULTS ---
     print("\n" + "="*85)
-    print("PHASE 3: THE FINAL MULTIMODAL RESULTS (50/50 AVERAGE)")
+    print("PHASE 3: FINAL MULTIMODAL RESULTS (50/50 AVERAGE)")
     print("="*85)
     print(f"{'Metric':<15} | {'Phase 1 (Clinical)':<20} | {'Phase 2 (Vision)':<18} | {'Phase 3 (Fusion)':<15}")
     print("-" * 85)
