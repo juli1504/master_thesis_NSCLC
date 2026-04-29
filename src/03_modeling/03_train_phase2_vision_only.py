@@ -286,10 +286,10 @@ def main():
             patience_counter = 0  
             
             torch.save(model.state_dict(), save_name)
-            print(f"   🌟 New best clinical model saved! (Val Sens+Spec: {best_clinical_score:.3f} | Val AUC: {best_auc_tracker:.3f})")
+            print(f"New best clinical model saved! (Val Sens+Spec: {best_clinical_score:.3f} | Val AUC: {best_auc_tracker:.3f})")
         else:
             patience_counter += 1
-            print(f"   ⚠️ No improvement for {patience_counter} epochs.")
+            print(f"No improvement for {patience_counter} epochs.")
             
         if patience_counter >= patience:
             print(f"\nEARLY STOPPING TRIGGERED! The model stopped improving after {epoch+1} epochs.")
